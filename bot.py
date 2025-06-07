@@ -36,6 +36,17 @@ else:
         logging.info("Không sử dụng proxy vì proxy.txt trống.")
         PROXY_URL = None
 
+# Đường dẫn đến file cookies.txt
+cookies_txt_path = os.path.join(current_dir, "cookies.txt")
+
+# Kiểm tra xem cookies.txt có tồn tại không
+if not os.path.isfile(cookies_txt_path):
+    logging.warning(f"Không tìm thấy {cookies_txt_path}. Bot sẽ chạy mà không sử dụng cookies.")
+    COOKIES_PATH = None
+else:
+    COOKIES_PATH = cookies_txt_path
+    logging.info(f"Sử dụng cookies từ {COOKIES_PATH}")
+
 
 
 # -----------------------------#
@@ -486,37 +497,76 @@ async def get_audio_stream_url(music_player, url):
         'restrictfilenames': True,
         'skip_download': True,
         'cachedir': False,
+        'extractor_args': {
+            'youtube': {
+                'skip': ['hls', 'dash'],
+                'player_skip': ['configs', 'webpage'],
+            }
+        },        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-us,en;q=0.5',
+            'Accept-Encoding': 'gzip,deflate',
+            'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
+            'Connection': 'close'
+        }
     }
 
     if PROXY_URL:
         ydl_opts['proxy'] = PROXY_URL
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Sử dụng asyncio.to_thread để chạy hàm đồng bộ trong một thread
-            info = await asyncio.to_thread(ydl.extract_info, url, download=False)
-            if info is None:
-                logger.error(f"yt_dlp trả về None cho thông tin video tại {url}.")
-                return None
+    # Thêm hỗ trợ cookies nếu có
+    if COOKIES_PATH:
+        ydl_opts['cookiefile'] = COOKIES_PATH
+        logger.info(f"Sử dụng cookies từ {COOKIES_PATH}")
 
-            # Lấy luồng âm thanh trực tiếp
-            audio_url = info.get('url')
-            title = info.get('title', 'URL Provided')
-            thumbnail = info.get('thumbnail')
-            logger.info(f"URL âm thanh cho guild {music_player.guild_id}: {audio_url}")  # Logging URL âm thanh
+    # Thử nhiều lần với các cấu hình khác nhau
+    retry_configs = [
+        {},  # Cấu hình mặc định
+        {'extractor_args': {'youtube': {'skip': ['dash']}}},  # Bỏ qua DASH
+        {'format': 'worst'},  # Chất lượng thấp nhất
+    ]
 
-            # Lưu trữ vào bộ nhớ đệm dưới dạng dict
-            music_player.audio_cache[url] = {
-                "url": audio_url,
-                "title": title,
-                "thumbnail": thumbnail,
-                "duration": "Unknown"  # Duration không được biết khi lấy từ URL trực tiếp
-            }
+    for attempt, extra_opts in enumerate(retry_configs, 1):
+        try:
+            current_opts = {**ydl_opts, **extra_opts}
+            logger.info(f"Thử lấy URL âm thanh lần {attempt} cho guild {music_player.guild_id}")
+            
+            with yt_dlp.YoutubeDL(current_opts) as ydl:
+                # Sử dụng asyncio.to_thread để chạy hàm đồng bộ trong một thread
+                info = await asyncio.to_thread(ydl.extract_info, url, download=False)
+                if info is None:
+                    logger.warning(f"yt_dlp trả về None cho thông tin video tại {url} (lần thử {attempt}).")
+                    continue
 
-        return music_player.audio_cache[url]
-    except Exception as e:
-        logger.error(f"Lỗi khi lấy audio stream URL tại {url}: {e}")
-        return None
+                # Lấy luồng âm thanh trực tiếp
+                audio_url = info.get('url')
+                title = info.get('title', 'URL Provided')
+                thumbnail = info.get('thumbnail')
+                
+                if not audio_url:
+                    logger.warning(f"Không tìm thấy URL âm thanh trong lần thử {attempt}")
+                    continue
+                    
+                logger.info(f"Thành công lấy URL âm thanh cho guild {music_player.guild_id} ở lần thử {attempt}")                # Lưu trữ vào bộ nhớ đệm dưới dạng dict
+                music_player.audio_cache[url] = {
+                    "url": audio_url,
+                    "title": title,
+                    "thumbnail": thumbnail,
+                    "duration": "Unknown"  # Duration không được biết khi lấy từ URL trực tiếp
+                }
+
+                return music_player.audio_cache[url]
+                
+        except Exception as e:
+            logger.warning(f"Lần thử {attempt} thất bại: {e}")
+            if attempt == len(retry_configs):
+                logger.error(f"Tất cả các lần thử đều thất bại cho URL {url}")
+            continue
+    
+    # Nếu tất cả các lần thử đều thất bại
+    logger.error(f"Không thể lấy audio stream URL tại {url} sau {len(retry_configs)} lần thử")
+    return None
 
 async def process_song_selection(ctx, song, user_voice_channel):
     """
