@@ -39,13 +39,21 @@ else:
 # Đường dẫn đến file cookies.txt
 cookies_txt_path = os.path.join(current_dir, "cookies.txt")
 
-# Kiểm tra xem cookies.txt có tồn tại không
+# Kiểm tra xem cookies.txt có tồn tại và có nội dung không
 if not os.path.isfile(cookies_txt_path):
     logging.warning(f"Không tìm thấy {cookies_txt_path}. Bot sẽ chạy mà không sử dụng cookies.")
     COOKIES_PATH = None
 else:
-    COOKIES_PATH = cookies_txt_path
-    logging.info(f"Sử dụng cookies từ {COOKIES_PATH}")
+    # Kiểm tra nếu file cookies có nội dung
+    with open(cookies_txt_path, 'r', encoding='utf-8') as f:
+        cookies_content = f.read().strip()
+    
+    if not cookies_content or cookies_content == "# Netscape HTTP Cookie File":
+        logging.warning(f"File cookies.txt trống hoặc chỉ có header. Bot sẽ chạy mà không sử dụng cookies.")
+        COOKIES_PATH = None
+    else:
+        COOKIES_PATH = cookies_txt_path
+        logging.info(f"Sử dụng cookies từ {COOKIES_PATH}")
 
 
 
@@ -150,7 +158,7 @@ def is_url(query):
 class MusicPlayer:
     """
     Lớp quản lý phát nhạc cho mỗi guild.
-    """
+    """    
     def __init__(self, guild_id, text_channel):
         self.guild_id = guild_id
         self.voice_client = None
@@ -158,7 +166,8 @@ class MusicPlayer:
         self.current_song = None
         self.is_paused = False
         self.is_looping = False
-        self.music_queue = asyncio.Queue()        self.current_control_message = None
+        self.music_queue = asyncio.Queue()
+        self.current_control_message = None
         self.disconnect_task = None
         self.audio_cache = TTLCache(maxsize=100, ttl=3600)  # Bộ nhớ đệm với TTL 1 giờ
         self.text_channel = text_channel  # Kênh TextChannel để gửi thông báo
@@ -409,7 +418,7 @@ class SongSelectionView(View):
 async def send_control_panel(music_player):
     """
     Gửi hoặc cập nhật bảng điều khiển nhạc (embed và view).
-    """
+    """    
     channel = music_player.text_channel
     # Xóa bảng điều khiển cũ (nếu có)
     if music_player.current_control_message:
@@ -418,19 +427,27 @@ async def send_control_panel(music_player):
         except discord.NotFound:
             pass
         music_player.current_control_message = None
-
     if music_player.current_song:
-        status_message = f"🎶 Đang phát: **{music_player.current_song['title']}** - {music_player.current_song['duration']}"
+        if music_player.is_playing_from_cache:
+            status_message = f"🎵 Phát từ bộ nhớ: **{music_player.current_song['title']}** ({music_player.current_song['duration']})"
+        else:
+            status_message = f"🎵 Đang phát: **{music_player.current_song['title']}** ({music_player.current_song['duration']})"
     else:
-        status_message = "🎶 Không có bài hát nào đang được phát."
-
+        status_message = "🎵 Không có bài hát nào đang được phát."
+    
+    # Set embed color based on playback status
+    embed_color = discord.Color.blue() if music_player.is_playing_from_cache else (
+        discord.Color.green() if not music_player.is_paused else discord.Color.gold()
+    )
+    
     embed = discord.Embed(
         title="🎶 Music Player",
         description=status_message,
-        color=discord.Color.green()
-    )    embed.add_field(
-        name="📀 Trạng thái",
-        value="Đang phát từ bộ nhớ đệm" if music_player.is_playing_from_cache else ("Đang phát" if not music_player.is_paused else "Đã tạm dừng")
+        color=embed_color
+    )
+    embed.add_field(        
+        name="🎧 Trạng thái phát nhạc",
+        value="🔄 Đang phát lại các bài hát trước đó" if music_player.is_playing_from_cache else ("▶️ Đang phát" if not music_player.is_paused else "⏸️ Đã tạm dừng")
     )
     embed.add_field(
         name="🔄 Lặp",
@@ -440,8 +457,13 @@ async def send_control_panel(music_player):
         name="📋 Hàng đợi",
         value=generate_queue_list(music_player.music_queue),
         inline=False
-    )
-    embed.set_footer(text="Điều khiển nhạc bằng các nút bên dưới!")
+    )    # Custom footer based on playback state
+    if music_player.is_playing_from_cache:
+        footer_text = "🔄 Đang Phát lại các bài hát trước đó | Điều khiển bằng các nút bên dưới"
+    else:
+        footer_text = "Điều khiển nhạc bằng các nút bên dưới!"
+    
+    embed.set_footer(text=footer_text)
 
     if music_player.current_song and music_player.current_song['thumbnail']:
         embed.set_thumbnail(url=music_player.current_song['thumbnail'])
@@ -484,7 +506,6 @@ async def get_audio_stream_url(music_player, url):
     if url in music_player.audio_cache:
         logger.info(f"Lấy URL âm thanh từ bộ nhớ đệm cho guild {music_player.guild_id}.")
         return music_player.audio_cache[url]
-
     ydl_opts = {
         'format': 'bestaudio/best',
         'quiet': True,
@@ -501,7 +522,8 @@ async def get_audio_stream_url(music_player, url):
                 'skip': ['hls', 'dash'],
                 'player_skip': ['configs', 'webpage'],
             }
-        },        'http_headers': {
+        },
+        'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-us,en;q=0.5',
@@ -546,13 +568,26 @@ async def get_audio_stream_url(music_player, url):
                 if not audio_url:
                     logger.warning(f"Không tìm thấy URL âm thanh trong lần thử {attempt}")
                     continue
-                    
-                logger.info(f"Thành công lấy URL âm thanh cho guild {music_player.guild_id} ở lần thử {attempt}")                # Lưu trữ vào bộ nhớ đệm dưới dạng dict
+                
+                logger.info(f"Thành công lấy URL âm thanh cho guild {music_player.guild_id} ở lần thử {attempt}")
+                
+                # Lấy thời lượng từ info nếu có
+                duration = "Unknown"
+                if info.get('duration'):
+                    duration_seconds = info.get('duration')
+                    minutes, seconds = divmod(int(duration_seconds), 60)
+                    hours, minutes = divmod(minutes, 60)
+                    if hours > 0:
+                        duration = f"{hours}:{minutes:02}:{seconds:02}"
+                    else:
+                        duration = f"{minutes}:{seconds:02}"
+                
+                # Lưu trữ vào bộ nhớ đệm dưới dạng dict
                 music_player.audio_cache[url] = {
                     "url": audio_url,
                     "title": title,
                     "thumbnail": thumbnail,
-                    "duration": "Unknown"  # Duration không được biết khi lấy từ URL trực tiếp
+                    "duration": duration
                 }
 
                 return music_player.audio_cache[url]
@@ -611,7 +646,8 @@ async def process_song_selection_from_selection(music_player, song, user_voice_c
         audio_data = await get_audio_stream_url(music_player, song['url'])
         if not audio_data:
             await music_player.text_channel.send("❗ Không thể lấy luồng âm thanh của bài hát này.")
-            return        current_song_info = {
+            return
+        current_song_info = {
             "url": audio_data["url"],
             "title": audio_data["title"],
             "thumbnail": audio_data["thumbnail"],
@@ -722,18 +758,21 @@ async def play_next(guild_id):
                         options='-vn -c:a copy -loglevel quiet'  # Stream copy để giảm tải CPU
                     ),
                     after=lambda e: asyncio.run_coroutine_threadsafe(play_next(guild_id), bot.loop)
-                )                logger.info(f"Đã phát bài tiếp theo: {next_song['title']} cho guild {guild_id}")
+                )                
+                logger.info(f"Đã phát bài tiếp theo: {next_song['title']} cho guild {guild_id}")
                 await send_control_panel(music_player)
             except Exception as e:
                 logger.error(f"Lỗi khi phát bài tiếp theo: {e}")
-        else:
-            # Hàng đợi trống, cố gắng nạp lại từ bộ nhớ đệm một bài hát
+        else:            # Hàng đợi trống, cố gắng nạp lại từ bộ nhớ đệm một bài hát
             cache_songs = list(music_player.audio_cache.values())
             if cache_songs:
                 # Đánh dấu đang phát từ cache mà không spam thông báo
                 music_player.is_playing_from_cache = True
                 # Chọn một bài hát ngẫu nhiên từ cache
                 song = random.choice(cache_songs)
+                # Đảm bảo song là dict đầy đủ với tất cả các trường cần thiết
+                if 'duration' not in song:
+                    song['duration'] = "Unknown"
                 await music_player.music_queue.put(song)  # Đảm bảo song là dict
                 await play_next(guild_id)  # Gọi lại play_next để bắt đầu phát
             else:
@@ -791,7 +830,7 @@ async def play(ctx, *, query: str):
             return
 
         music_player = get_music_player(ctx.guild.id, ctx.channel)
-        if is_url(query):
+        if is_url(query):            
             url = query
             audio_data = await get_audio_stream_url(music_player, url)
             if not audio_data:
@@ -801,7 +840,7 @@ async def play(ctx, *, query: str):
                 'url': url,
                 'title': audio_data["title"],
                 'thumbnail': audio_data["thumbnail"],
-                'duration': "Unknown"
+                'duration': audio_data["duration"]  # Sử dụng thời lượng từ audio_data thay vì "Unknown"
             }, user_voice.channel)
         else:
             await ctx.send(f"🔍 Đang tìm kiếm **{query}** trên YouTube...")
