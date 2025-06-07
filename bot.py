@@ -158,12 +158,12 @@ class MusicPlayer:
         self.current_song = None
         self.is_paused = False
         self.is_looping = False
-        self.music_queue = asyncio.Queue()
-        self.current_control_message = None
+        self.music_queue = asyncio.Queue()        self.current_control_message = None
         self.disconnect_task = None
         self.audio_cache = TTLCache(maxsize=100, ttl=3600)  # Bộ nhớ đệm với TTL 1 giờ
         self.text_channel = text_channel  # Kênh TextChannel để gửi thông báo
         self.played_songs = []  # Danh sách các bài hát đã được phát
+        self.is_playing_from_cache = False  # Trạng thái đang phát từ bộ nhớ đệm
 
 # -----------------------------#
 #        Định Nghĩa YouTubeAPI  #
@@ -428,10 +428,9 @@ async def send_control_panel(music_player):
         title="🎶 Music Player",
         description=status_message,
         color=discord.Color.green()
-    )
-    embed.add_field(
+    )    embed.add_field(
         name="📀 Trạng thái",
-        value="Đang phát" if not music_player.is_paused else "Đã tạm dừng"
+        value="Đang phát từ bộ nhớ đệm" if music_player.is_playing_from_cache else ("Đang phát" if not music_player.is_paused else "Đã tạm dừng")
     )
     embed.add_field(
         name="🔄 Lặp",
@@ -612,15 +611,13 @@ async def process_song_selection_from_selection(music_player, song, user_voice_c
         audio_data = await get_audio_stream_url(music_player, song['url'])
         if not audio_data:
             await music_player.text_channel.send("❗ Không thể lấy luồng âm thanh của bài hát này.")
-            return
-
-        current_song_info = {
+            return        current_song_info = {
             "url": audio_data["url"],
             "title": audio_data["title"],
             "thumbnail": audio_data["thumbnail"],
             "duration": song['duration']
         }
-
+        
         # Thêm bài hát đã phát vào danh sách đã phát
         music_player.played_songs.append(current_song_info)
 
@@ -629,6 +626,7 @@ async def process_song_selection_from_selection(music_player, song, user_voice_c
             await send_control_panel(music_player)
         else:
             music_player.current_song = current_song_info
+            music_player.is_playing_from_cache = False  # Đánh dấu không phát từ cache
             try:
                 logger.info(f"Đang cố gắng phát: {current_song_info['title']} cho guild {music_player.guild_id}")
                 
@@ -724,8 +722,7 @@ async def play_next(guild_id):
                         options='-vn -c:a copy -loglevel quiet'  # Stream copy để giảm tải CPU
                     ),
                     after=lambda e: asyncio.run_coroutine_threadsafe(play_next(guild_id), bot.loop)
-                )
-                logger.info(f"Đã phát bài tiếp theo: {next_song['title']} cho guild {guild_id}")
+                )                logger.info(f"Đã phát bài tiếp theo: {next_song['title']} cho guild {guild_id}")
                 await send_control_panel(music_player)
             except Exception as e:
                 logger.error(f"Lỗi khi phát bài tiếp theo: {e}")
@@ -733,14 +730,15 @@ async def play_next(guild_id):
             # Hàng đợi trống, cố gắng nạp lại từ bộ nhớ đệm một bài hát
             cache_songs = list(music_player.audio_cache.values())
             if cache_songs:
-                # Thêm thông báo khi bắt đầu phát lại từ cache
-                await channel.send("🔄 Bot sẽ bắt đầu phát lại các bài hát từ bộ nhớ đệm.")
+                # Đánh dấu đang phát từ cache mà không spam thông báo
+                music_player.is_playing_from_cache = True
                 # Chọn một bài hát ngẫu nhiên từ cache
                 song = random.choice(cache_songs)
                 await music_player.music_queue.put(song)  # Đảm bảo song là dict
                 await play_next(guild_id)  # Gọi lại play_next để bắt đầu phát
             else:
                 music_player.current_song = None
+                music_player.is_playing_from_cache = False
                 await channel.send("🎵 Hết hàng đợi và bộ nhớ đệm trống. Bot sẽ ngắt kết nối sau 15 phút nếu không có yêu cầu mới.")
                 music_player.disconnect_task = asyncio.create_task(disconnect_after_delay(guild_id))
                 await update_bot_status(music_player)
