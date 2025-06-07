@@ -128,8 +128,8 @@ pip install -r requirements.txt
    [Service]
    Type=simple
    User=<username>  # Thay <username> bằng tên người dùng của bạn ví dụ: root
-   WorkingDirectory=/path/to/your/project  # Thay bằng đường dẫn đến thư mục chứa bot.py ví dụ: /root/bot
-   ExecStart=/path/to/your/project/venv/bin/python3 bot.py #ví dụ: /root/bot/venv/bin/python3 bot.py
+   WorkingDirectory=/root/Music-Bot-Discord  # Thay bằng đường dẫn đến thư mục chứa bot.py ví dụ: /root/bot
+   ExecStart=/root/Music-Bot-Discord/venv/bin/python3 bot.py #ví dụ: /root/bot/venv/bin/python3 bot.py
    Restart=always
    RestartSec=3
    Environment="PYTHONUNBUFFERED=1"
